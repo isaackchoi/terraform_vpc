@@ -1,0 +1,448 @@
+# ==========================================
+# 1. (AWS Provider)
+# ==========================================
+provider "aws" {
+  region = "us-east-1"
+}
+
+# ==========================================
+# 2. (VPC & 高可用雙子網路)
+# ==========================================
+
+resource "aws_vpc" "logistics_vpc" {
+  cidr_block           = "10.10.0.0/16"
+  enable_dns_hostnames = true
+  tags                 = { Name = "Isaac-Logistics-VPC" }
+}
+
+# 第一個子網路：位於 us-east-1a
+resource "aws_subnet" "public_subnet" {
+  vpc_id            = aws_vpc.logistics_vpc.id
+  cidr_block        = "10.10.1.0/24"
+  availability_zone = "us-east-1a"
+  tags              = { Name = "Isaac-Public-Subnet-1" }
+}
+
+# 🚨 核心修正：第二個子網路：位於 us-east-1b（滿足 ALB 高可用性要求）
+resource "aws_subnet" "public_subnet_2" {
+  vpc_id            = aws_vpc.logistics_vpc.id
+  cidr_block        = "10.10.2.0/24"
+  availability_zone = "us-east-1b"
+  tags              = { Name = "Isaac-Public-Subnet-2" }
+}
+
+# ==========================================
+# 3. 聯外網路與路由地圖 (IGW & Route Table)
+# ==========================================
+
+resource "aws_internet_gateway" "logistics_igw" {
+  vpc_id = aws_vpc.logistics_vpc.id
+  tags   = { Name = "Isaac-Logistics-IGW" }
+}
+
+resource "aws_route_table" "public_rt" {
+  vpc_id = aws_vpc.logistics_vpc.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.logistics_igw.id
+  }
+  tags = { Name = "Isaac-Public-RouteTable" }
+}
+
+# 路由地圖同時發給兩個子網路，確保兩邊都能通網
+resource "aws_route_table_association" "public_subnet_assoc" {
+  subnet_id      = aws_subnet.public_subnet.id
+  route_table_id = aws_route_table.public_rt.id
+}
+
+resource "aws_route_table_association" "public_subnet_assoc_2" {
+  subnet_id      = aws_subnet.public_subnet_2.id
+  route_table_id = aws_route_table.public_rt.id
+}
+
+# ==========================================
+# 4. 雙安全組防火牆 (Security Groups)
+# ==========================================
+
+# 前線警衛室：給 ALB 使用，開門迎接全世界
+resource "aws_security_group" "alb_sg" {
+  name   = "isaac-alb-sg"
+  vpc_id = aws_vpc.logistics_vpc.id
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = { Name = "Isaac-ALB-SG" }
+}
+
+# 後方核心警衛室：給 EC2 使用，拒絕外網直連，只聽從前線 ALB 的流量！
+resource "aws_security_group" "web_sg" {
+  name   = "isaac-web-sg"
+  vpc_id = aws_vpc.logistics_vpc.id
+  ingress {
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = { Name = "Isaac-Web-SG" }
+}
+
+# ==========================================
+# 5. 後端運算伺服器 (EC2 Instance)
+# ==========================================
+resource "aws_instance" "web_server" {
+  ami                         = "ami-0c7217cdde317cfec"
+  instance_type               = "t2.micro"
+  subnet_id                   = aws_subnet.public_subnet.id
+  vpc_security_group_ids      = [aws_security_group.web_sg.id]
+  associate_public_ip_address = true
+
+  user_data = <<-EOF
+              #!/bin/bash
+              sudo apt-get update -y
+              sudo apt-get install nginx -y
+              sudo systemctl start nginx
+              sudo systemctl enable nginx
+              echo "<h1>Welcome to Isaac's Logistics Cloud Center! (Protected by ALB)</h1>" | sudo tee /var/www/html/index.html
+              EOF
+
+  tags = { Name = "Isaac-Web-Server" }
+}
+
+# ==========================================
+# 6. 企業級流量調度 (Application Load Balancer)
+# ==========================================
+
+resource "aws_lb" "logistics_alb" {
+  name               = "isaac-logistics-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb_sg.id]
+
+  # 🚨 核心修正：將兩個不同可用區的子網路同時餵給 ALB
+  subnets = [
+    aws_subnet.public_subnet.id,
+    aws_subnet.public_subnet_2.id
+  ]
+
+  tags = { Name = "Isaac-Logistics-ALB" }
+}
+
+resource "aws_lb_target_group" "web_tg" {
+  name        = "isaac-web-target-group"
+  port        = 80
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.logistics_vpc.id
+  target_type = "ip"
+  health_check {
+    path                = "/"
+    protocol            = "HTTP"
+    port                = "80"
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+    timeout             = 3
+    interval            = 10
+  }
+}
+
+resource "aws_lb_listener" "http_listener_v2" {
+  load_balancer_arn = aws_lb.logistics_alb.arn
+  port              = "80"
+  protocol          = "HTTP"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.web_tg.arn
+  }
+}
+
+# ecr.tf
+# 建立一個名為 isaac-fastapi-repo 的 ECR 倉庫
+resource "aws_ecr_repository" "fastapi_app" {
+  name                 = "isaac-fastapi-repo"
+  image_tag_mutability = "MUTABLE" # 允許鏡像標籤被覆蓋（方便開發測試調整）
+  force_delete         = true
+  # 開啟掃描機制，當鏡像推上去時，AWS 會自動幫我們掃描有沒有資安漏洞
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = {
+    Name        = "isaac-fastapi-repo"
+    Environment = "Dev"
+  }
+}
+
+# 輸出 ECR 倉庫的 URL，等一下 Docker 推送時會用到
+output "ecr_repository_url" {
+  value       = aws_ecr_repository.fastapi_app.repository_url
+  description = "The URL of the ECR repository"
+}
+# ==============================================================================
+# PHASE 2: AWS ECS FARGATE DEPLOYMENT
+# ==============================================================================
+
+# 1. 建立 ECS 集群 (美食街廣場)
+resource "aws_ecs_cluster" "main" {
+  name = "isaac-ecs-cluster"
+
+  tags = {
+    Name        = "isaac-ecs-cluster"
+    Environment = "Dev"
+  }
+}
+
+# 2. 建立 Task Definition (貨櫃規格與菜單)
+resource "aws_ecs_task_definition" "app" {
+  family                   = "isaac-fastapi-task"
+  network_mode             = "awsvpc"    # Fargate 必須使用 awsvpc 網路模式
+  requires_compatibilities = ["FARGATE"] # 指定使用 Serverless 的 Fargate 模式
+  cpu                      = "256"       # 最小的 CPU 規格 (0.25 vCPU)
+  memory                   = "512"       # 最小的記憶體規格 (512 MB)
+  execution_role_arn       = aws_iam_role.ecs_execution_role.arn
+  # 定義容器本體（注意：這裡的 image 網址要對準我們剛剛建好的 ECR）
+  container_definitions = jsonencode([
+    {
+      name      = "fastapi-container"
+      image     = "410247953170.dkr.ecr.us-east-1.amazonaws.com/isaac-fastapi-repo:latest"
+      essential = true
+
+      # 告訴 AWS，這個貨櫃內部是用 80 端口在聽歌（監聽）
+      portMappings = [
+        {
+          containerPort = 80
+          hostPort      = 80
+        }
+      ]
+      # 💡 核心大升級：將資料庫連線資訊，以環境變數形式直接注入給 Python 的 os.getenv()
+      environment = [
+        { name = "DB_HOST", value = aws_db_instance.postgres.address },
+        { name = "DB_NAME", value = aws_db_instance.postgres.db_name },
+        { name = "DB_USER", value = aws_db_instance.postgres.username },
+        { name = "DB_PASSWORD", value = random_password.rds_password.result }
+      ]
+    }
+  ])
+}
+
+# ✨ 【安全組要放在這裡！】它是完全獨立的外界資源，不要塞進別人的大括號裡
+resource "aws_security_group" "ecs_sg" {
+  name        = "isaac-ecs-tasks-sg"
+  description = "allow inbound traffic to fastapi container"
+  vpc_id      = aws_vpc.logistics_vpc.id
+
+  ingress {
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# 3. 建立 ECS Service (調度員)
+resource "aws_ecs_service" "main" {
+  name            = "isaac-fastapi-service"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.app.arn
+  desired_count   = 1 # 隨時維持 1 個容器在線上運行
+  launch_type     = "FARGATE"
+
+  # 讓這個容器安插進我們前天蓋好的網路架構中
+  network_configuration {
+    subnets          = [aws_subnet.private_subnet_1.id, aws_subnet.private_subnet_2.id]
+    security_groups  = [aws_security_group.ecs_sg.id] # ✨ 把這一行改成我們剛剛新蓋的專屬安全組！
+    assign_public_ip = false                          # 讓 Fargate 帶有公開 IP
+  }
+  load_balancer {
+    target_group_arn = aws_lb_target_group.web_tg.arn
+    container_name   = "fastapi-container"
+    container_port   = 80
+  }
+}
+
+# 1. 幫 ECS Fargate 辦一張員工證 (IAM Role)
+resource "aws_iam_role" "ecs_execution_role" {
+  name = "isaac-ecs-execution-role"
+
+  # 告訴 AWS，這張證件是專門給 ecs-tasks (Fargate) 帶在身上的
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+# 2. 把「去 ECR 拿貨」的官方權限貼紙，貼到這張員工證上
+resource "aws_iam_role_policy_attachment" "ecs_execution_role_policy" {
+  role       = aws_iam_role.ecs_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+# 1. 宣告一個私有子網，專門用來藏 ECS 貨櫃
+resource "aws_subnet" "private_subnet_1" {
+  vpc_id            = aws_vpc.logistics_vpc.id
+  cidr_block        = "10.10.3.0/24"
+  availability_zone = "us-east-1a"
+
+  tags = {
+    Name = "isaac-private-subnet-1"
+  }
+}
+
+# 2. 申請一個靜態的公網 IP (Elastic IP)，給 NAT Gateway 專用
+resource "aws_eip" "nat_eip" {
+  domain     = "vpc"
+  depends_on = [aws_internet_gateway.logistics_igw]
+}
+
+# 3. 創建 NAT Gateway，讓它站在公有子網，幫私有子網開單向門
+resource "aws_nat_gateway" "nat_gw" {
+  # 注意：NAT 必須放在外圈（Public Subnet）
+  allocation_id = aws_eip.nat_eip.id
+  subnet_id     = aws_subnet.public_subnet.id
+
+  tags = {
+    Name = "isaac-nat-gateway"
+  }
+}
+
+# 4. 為私有子網建立專屬的路由表，規定：要上網一律走 NAT Gateway！
+resource "aws_route_table" "private_rt" {
+  vpc_id = aws_vpc.logistics_vpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_nat_gateway.nat_gw.id # 導向單向門
+  }
+
+  tags = {
+    Name = "isaac-private-route-table"
+  }
+}
+
+# 5. 把私有子網與這個安全的路由表綁定在一起
+resource "aws_route_table_association" "private_assoc" {
+  subnet_id      = aws_subnet.private_subnet_1.id
+  route_table_id = aws_route_table.private_rt.id
+}
+# ==============================================================================
+# 5. RDS 關聯式資料庫配置 (PostgreSQL)
+# ==============================================================================
+
+# 5.1 額外建立第二個 Private Subnet，以符合 RDS 跨雙可用區 (Multi-AZ) 的強制要求
+resource "aws_subnet" "private_subnet_2" {
+  vpc_id            = aws_vpc.logistics_vpc.id
+  cidr_block        = "10.10.4.0/24"
+  availability_zone = "us-east-1b" # 確保與原來的 1a 不同
+
+  tags = {
+    Name = "isaac-private-subnet-2"
+  }
+}
+
+# 5.2 將第二個私有網段也綁定到私有路由表
+resource "aws_route_table_association" "private_assoc_2" {
+  subnet_id      = aws_subnet.private_subnet_2.id
+  route_table_id = aws_route_table.private_rt.id
+}
+
+# 5.3 資料庫專用防火牆：只允許來自 ECS 容器的 5432 埠流量
+resource "aws_security_group" "rds_sg" {
+  name        = "isaac-rds-sg"
+  description = "Allow DB access from ECS tasks"
+  vpc_id      = aws_vpc.logistics_vpc.id
+
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.ecs_sg.id] # 關鍵！只有 ECS 容器能進來
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "Isaac-RDS-SG" }
+}
+
+# 5.4 安全性加強：隨機生成 16 位數資料庫強密碼
+resource "random_password" "rds_password" {
+  length           = 16
+  special          = true
+  override_special = "!@#"
+}
+
+# 5.5 將兩個私有網段打包成 RDS 規定的 Subnet Group
+resource "aws_db_subnet_group" "rds_subnets" {
+  name       = "isaac-rds-subnet-group"
+  subnet_ids = [aws_subnet.private_subnet_1.id, aws_subnet.private_subnet_2.id]
+
+  tags = {
+    Name = "isaac-rds-subnet-group"
+  }
+}
+
+# 5.6 部署 RDS PostgreSQL 資料庫實體
+resource "aws_db_instance" "postgres" {
+  identifier             = "isaac-postgres"
+  allocated_storage      = 20
+  engine                 = "postgres"
+  engine_version         = "15"
+  instance_class         = "db.t3.micro" # 便宜且符合練習規模的規格
+  db_name                = "isaacdb"     # 初始資料庫名稱
+  username               = "isaac_admin" # 管理員帳號
+  password               = random_password.rds_password.result
+  db_subnet_group_name   = aws_db_subnet_group.rds_subnets.name
+  vpc_security_group_ids = [aws_security_group.rds_sg.id]
+  publicly_accessible    = false # 絕對不對公網開放
+  skip_final_snapshot    = true  # 練習用，刪除時不建立最後備份
+  storage_encrypted      = true
+  deletion_protection    = false
+
+  tags = {
+    Name = "isaac-postgres"
+  }
+}
+
+# 5.7 輸出 (Outputs)：方便我們之後查看資料庫的連線端點
+output "rds_endpoint" {
+  value       = aws_db_instance.postgres.address
+  description = "RDS endpoint"
+}
+
+output "rds_password" {
+  value       = random_password.rds_password.result
+  sensitive   = true # 隱藏密碼，避免直接印在終端機畫面上
+  description = "Auto-generated RDS admin password (sensitive)"
+}
