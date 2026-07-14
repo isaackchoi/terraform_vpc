@@ -44,3 +44,7 @@ output "ecr_repository_url" {
 output "rds_endpoint" {
   value = module.data.rds_endpoint
 }
+output "alb_dns_name" {
+  value       = "http://${module.compute.alb_dns_name}" # 💡 這裡假設你的 compute 模組有輸出 alb_dns_name
+  description = "The public URL of our FastAPI application"
+}
