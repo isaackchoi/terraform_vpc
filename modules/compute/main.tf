@@ -1,19 +1,8 @@
 # ==========================================
-# 0. 運算模組輸入變數插槽 (Variables)
-# ==========================================
-variable "vpc_id" { type = string }
-variable "public_subnet_ids" { type = list(string) }
-variable "private_subnet_ids" { type = list(string) }
-variable "rds_endpoint" { type = string }
-variable "rds_db_name" { type = string }
-variable "rds_username" { type = string }
-variable "rds_password" { type = string }
-
-# ==========================================
 # 4. 安全組防火牆 (Security Groups)
 # ==========================================
 resource "aws_security_group" "alb_sg" {
-  name   = "isaac-alb-sg"
+  name   = "${var.project_name}-${var.environment}-alb-sg"
   vpc_id = var.vpc_id
   ingress {
     from_port   = 80
@@ -27,11 +16,11 @@ resource "aws_security_group" "alb_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-  tags = { Name = "Isaac-ALB-SG" }
+  tags = { Name = "${var.project_name}-${var.environment}-alb-sg" }
 }
 
 resource "aws_security_group" "ecs_sg" {
-  name        = "isaac-ecs-tasks-sg"
+  name        = "${var.project_name}-${var.environment}-ecs-sg"
   description = "allow inbound traffic to fastapi container"
   vpc_id      = var.vpc_id
 
@@ -48,23 +37,23 @@ resource "aws_security_group" "ecs_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-  tags = { Name = "Isaac-ECS-SG" }
+  tags = { Name = "${var.project_name}-${var.environment}-ecs-sg" }
 }
 
 # ==========================================
 # 5. Application Load Balancer & Target Group
 # ==========================================
 resource "aws_lb" "logistics_alb" {
-  name               = "isaac-logistics-alb"
+  name               = "${var.project_name}-${var.environment}-alb"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb_sg.id]
   subnets            = var.public_subnet_ids
-  tags               = { Name = "Isaac-Logistics-ALB" }
+  tags               = { Name = "${var.project_name}-${var.environment}-alb" }
 }
 
 resource "aws_lb_target_group" "web_tg" {
-  name        = "isaac-web-target-group"
+  name        = "${var.project_name}-${var.environment}-tg"
   port        = 80
   protocol    = "HTTP"
   vpc_id      = var.vpc_id
@@ -95,24 +84,24 @@ resource "aws_lb_listener" "http_listener_v2" {
 # 6. AWS ECR Repository
 # ==========================================
 resource "aws_ecr_repository" "fastapi_app" {
-  name                 = "isaac-fastapi-repo"
+  name                 = "${var.project_name}-${var.environment}-repo"
   image_tag_mutability = "MUTABLE"
   force_delete         = true
   image_scanning_configuration {
     scan_on_push = true
   }
-  tags = { Name = "isaac-fastapi-repo" }
+  tags = { Name = "${var.project_name}-${var.environment}-repo" }
 }
 
 # ==========================================
 # 7. AWS ECS FARGATE DEPLOYMENT
 # ==========================================
 resource "aws_ecs_cluster" "main" {
-  name = "isaac-ecs-cluster"
+  name = "${var.project_name}-${var.environment}-cluster"
 }
 
 resource "aws_ecs_task_definition" "app" {
-  family                   = "isaac-fastapi-task"
+  family                   = "${var.project_name}-${var.environment}-task"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   cpu                      = "256"
@@ -141,7 +130,7 @@ resource "aws_ecs_task_definition" "app" {
 }
 
 resource "aws_ecs_service" "main" {
-  name            = "isaac-fastapi-service"
+  name            = "${var.project_name}-${var.environment}-service"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.app.arn
   desired_count   = 1
@@ -161,7 +150,7 @@ resource "aws_ecs_service" "main" {
 }
 
 resource "aws_iam_role" "ecs_execution_role" {
-  name = "isaac-ecs-execution-role"
+  name = "${var.project_name}-${var.environment}-ecs-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [

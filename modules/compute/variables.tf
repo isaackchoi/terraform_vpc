@@ -1,0 +1,9 @@
+variable "vpc_id" { type = string }
+variable "public_subnet_ids" { type = list(string) }
+variable "private_subnet_ids" { type = list(string) }
+variable "rds_endpoint" { type = string }
+variable "rds_db_name" { type = string }
+variable "rds_username" { type = string }
+variable "rds_password" { type = string }
+variable "project_name" { type = string }
+variable "environment" { type = string }

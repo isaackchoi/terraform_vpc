@@ -4,7 +4,9 @@
 
 # 🌐 1. 網路部門
 module "network" {
-  source = "./modules/network"
+  source       = "./modules/network"
+  project_name = var.project_name
+  environment  = var.environment
 }
 
 # 💾 2. 資料庫部門
@@ -13,6 +15,8 @@ module "data" {
   vpc_id             = module.network.vpc_id
   ecs_sg_id          = module.compute.ecs_sg_id # 💡 從運算部門拿安全組 ID
   private_subnet_ids = module.network.private_subnet_ids
+  project_name       = var.project_name
+  environment        = var.environment
 }
 
 # 🚀 3. 運算部門 (包含 ALB, ECS, ECR, IAM)
@@ -25,13 +29,15 @@ module "compute" {
   rds_db_name        = module.data.rds_db_name
   rds_username       = module.data.rds_username
   rds_password       = module.data.rds_password
+  project_name       = var.project_name
+  environment        = var.environment
 }
 
 # ==========================================
 # 1. 全域環境供應商宣告
 # ==========================================
 provider "aws" {
-  region = "us-east-1"
+  region = var.aws_region
 }
 
 # ==========================================

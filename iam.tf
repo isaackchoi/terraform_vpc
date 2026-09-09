@@ -1,6 +1,6 @@
 # 1. 建立 IAM 使用者
 resource "aws_iam_user" "github_actions" {
-  name = "github-actions-user"
+  name = "${var.project_name}-${var.environment}-github-actions"
 }
 
 # 2. 為使用者建立存取金鑰 (Access Key)

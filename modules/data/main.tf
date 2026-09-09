@@ -1,12 +1,8 @@
-variable "vpc_id" { type = string }
-variable "ecs_sg_id" { type = string }
-variable "private_subnet_ids" { type = list(string) }
-
 # ==========================================
 # 9. RDS 關聯式資料庫配置 (PostgreSQL)
 # ==========================================
 resource "aws_security_group" "rds_sg" {
-  name        = "isaac-rds-sg"
+  name        = "${var.project_name}-${var.environment}-rds-sg"
   description = "Allow DB access from ECS tasks"
   vpc_id      = var.vpc_id # 💡 模組內部：改用變數向總指揮索取 VPC ID
 
@@ -23,7 +19,7 @@ resource "aws_security_group" "rds_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-  tags = { Name = "Isaac-RDS-SG" }
+  tags = { Name = "${var.project_name}-${var.environment}-rds-sg" }
 }
 
 resource "random_password" "rds_password" {
@@ -33,13 +29,13 @@ resource "random_password" "rds_password" {
 }
 
 resource "aws_db_subnet_group" "rds_subnets" {
-  name       = "isaac-rds-subnet-group"
+  name       = "${var.project_name}-${var.environment}-rds-subnet-group"
   subnet_ids = var.private_subnet_ids # 💡 模組內部：改用變數向總指揮索取私有子網路 IDs
-  tags       = { Name = "isaac-rds-subnet-group" }
+  tags       = { Name = "${var.project_name}-${var.environment}-rds-subnet-group" }
 }
 
 resource "aws_db_instance" "postgres" {
-  identifier             = "isaac-postgres"
+  identifier             = "${var.project_name}-${var.environment}-postgres"
   allocated_storage      = 20
   engine                 = "postgres"
   engine_version         = "15"
@@ -53,5 +49,5 @@ resource "aws_db_instance" "postgres" {
   skip_final_snapshot    = true
   storage_encrypted      = true
   deletion_protection    = false
-  tags                   = { Name = "isaac-postgres" }
+  tags                   = { Name = "${var.project_name}-${var.environment}-postgres" }
 }
